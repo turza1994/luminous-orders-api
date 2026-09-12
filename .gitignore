@@ -11,3 +11,8 @@ coverage/
 
 .vscode/
 .idea/
+
+AGENTS.md
+.freebuff/
+DECISIONS.md
+README.md

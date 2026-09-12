@@ -1,7 +1,11 @@
 import type { ErrorRequestHandler } from "express";
+import { ZodError } from "zod";
 
 import { env } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
+import { ERROR_CODES } from "../errors/error-codes.js";
+import { HTTP_STATUS } from "../config/constants.js";
+import { logger } from "../utils/logger.js";
 
 export const errorMiddleware: ErrorRequestHandler = (
     error,
@@ -21,7 +25,26 @@ export const errorMiddleware: ErrorRequestHandler = (
         return;
     }
 
-    console.error(error);
+    if (error instanceof ZodError) {
+        const message = error.issues
+            .map((issue) => issue.message)
+            .join("; ");
+
+        res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            error: {
+                code: ERROR_CODES.INVALID_REQUEST,
+                message,
+            },
+        });
+
+        return;
+    }
+
+    logger.error("Unexpected error", {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+    });
 
     res.status(500).json({
         success: false,

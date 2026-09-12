@@ -1,17 +1,16 @@
 import { app } from "./app.js";
 import { env } from "./config/env.js";
+import { logger } from "./utils/logger.js";
 
 const server = app.listen(env.PORT, () => {
-    console.log(
-        `Server running on http://localhost:${env.PORT}`,
-    );
+    logger.info(`Server running on http://localhost:${env.PORT}`);
 });
 
 const shutdown = (signal: string) => {
-    console.log(`${signal} received. Shutting down...`);
+    logger.info(`${signal} received. Shutting down...`);
 
     server.close(() => {
-        console.log("HTTP server closed.");
+        logger.info("HTTP server closed.");
         process.exit(0);
     });
 };
