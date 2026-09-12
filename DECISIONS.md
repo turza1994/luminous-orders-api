@@ -1,63 +1,288 @@
-# DECISIONS.md
+# Engineering Decisions
 
-## 1. What did the requirements not tell you?
+## 1. What requirements did not tell you? List your assumptions. Flag the one you're least confident about.
 
-**The original schema and seed script were not included.** The assignment references a provided PostgreSQL schema and seed script containing ~5,000 users and ~50,000 orders, but these were not included in the materials received. I created a minimal schema and seed script that demonstrate all requirements with a small, explainable dataset.
+The assessment clearly specifies the required endpoint:
 
-**Assumptions made:**
+```text
+GET /api/users/:id/orders
+```
 
-- **Single `GET /api/users/:id/orders` endpoint** — the assignment is focused on this one endpoint; I did not build additional CRUD operations.
-- **Order status values** — chose `PENDING`, `CONFIRMED`, `PROCESSING`, `COMPLETED`, `CANCELLED` as reasonable statuses. The exact values were not specified.
-- **No pagination required** — the assignment says "do not introduce pagination unless the existing assignment requirements justify it." The scalability answer in section 3 addresses how pagination would be added.
-- **`id` is an integer** — the `serial` primary key means IDs are integers; route params are validated accordingly.
-- **Password comparison uses "generic" error messages** — both "user not found" and "wrong password" return the same `Invalid email or password` message to prevent user enumeration.
-- **JWT `sub` claim holds the user ID as a string** — standard JWT convention, parsed back to integer on verification.
+and requires:
 
-**Least-confident assumption:** The order status enum values. Without the original schema, I chose reasonable statuses. In a real project, these would come from product requirements.
+- newest-first order history
+- responsiveness as order count grows
+- support for users with no orders
+- access restricted to the user themselves or an admin
 
-## 2. What did you use AI for, and where did you override it?
+However, several implementation details were not specified.
 
-**AI-assisted areas:**
+### Assumptions
 
-- **Project structure decisions** — AI suggested the layered architecture (route → controller → service → database). I accepted this as it matches the assignment's explicit guidance.
-- **Error handling patterns** — AI helped establish the `AppError` class with typed error codes and the centralized error middleware pattern.
-- **Test mocking strategy** — AI suggested mocking at the service level for HTTP tests rather than attempting to mock the Drizzle chainable API. I accepted this as pragmatic for the assignment scope.
-- **Vitest configuration** — AI identified that `vi.mock()` on the env module was necessary because env validation runs at import time and `process.exit(1)` would kill the test process.
+#### 1. The supplied PostgreSQL schema and seed data were not received
 
-**Where I overrode AI:**
+The assessment referenced an existing PostgreSQL schema and seed script containing approximately 5,000 users and 50,000 orders. Those files were not included in the assessment materials I received.
 
-- **Seed script design** — AI initially suggested generating 5,000 users and 50,000 orders. I overrode this to keep the dataset small and explainable, consistent with the assignment's "small and easy to explain in a 20-minute technical discussion" requirement.
-- **No Zod in the auth service** — I used manual validation in the login controller instead of Zod, keeping the auth flow minimal. The env validation already demonstrates Zod usage.
-- **Simplified test suite** — AI suggested comprehensive edge-case testing. I kept the test suite focused on the assignment's specified test cases to avoid over-engineering.
+Rather than blocking implementation, I created a minimal equivalent schema containing:
 
-## 3. What breaks first at 100× this data?
+```text
+users
+orders
+```
 
-At 100× (~500K users, ~5M orders), the **order-history query** is the first bottleneck.
+and created a seed script with representative users and orders.
 
-**The specific problem:** The composite index `orders_user_created_at_idx (user_id, created_at)` efficiently serves the `WHERE user_id = ? ORDER BY created_at DESC` query. However, as the orders table grows:
+This is the assumption I am **least confident about**, because the original schema may have contained additional fields, constraints, relationships, or business rules that were not visible to me.
 
-1. **Index size** — the composite index grows proportionally with the orders table. At 5M rows, the index fits comfortably in memory on most Postgres instances, but on smaller Neon instances it may start spilling to disk.
-2. **High-volume users** — a user with thousands of orders returns a large result set without pagination. This affects both query time and network transfer.
+The implementation therefore focuses only on the data required by the stated endpoint.
 
-**How to detect before customers report it:**
+#### 2. User identification
 
-- **Query latency monitoring** — add `pg_stat_statements` or Neon's query insights to track p95/p99 latency for the order-history query. Alert when it exceeds a threshold (e.g., 200ms).
-- **EXPLAIN ANALYZE** — periodically run `EXPLAIN ANALYZE` on the order-history query to verify the index is still being used and the query plan hasn't degraded.
-- **Load testing** — run k6 or similar against the endpoint with realistic data volumes before deployment.
-- **Database metrics** — monitor `idx_scan` vs `seq_scan` in `pg_stat_user_indexes` to confirm the index is being used.
+I assumed users have a numeric database ID because the endpoint uses:
 
-**First fix:** Add `LIMIT` / cursor-based pagination to the query. This bounds the result set regardless of how many orders a user has.
+```text
+/api/users/:id/orders
+```
+
+The JWT contains the authenticated user's ID as the `sub` claim.
+
+#### 3. Admin authorization
+
+I assumed a user has a role of either:
+
+```text
+USER
+ADMIN
+```
+
+and that `ADMIN` users can access any user's order history.
+
+#### 4. Nonexistent users
+
+I chose:
+
+```text
+404 Not Found
+```
+
+when the requested user does not exist.
+
+This makes the distinction between:
+
+```text
+existing user with no orders → 200 + []
+nonexistent user              → 404
+```
+
+explicit.
+
+#### 5. Empty order history
+
+A valid user with no orders receives:
+
+```json
+{
+  "success": true,
+  "data": {
+    "orders": []
+  }
+}
+```
+
+rather than an error.
+
+#### 6. Pagination
+
+Pagination was not explicitly required, so I did not add it.
+
+The current implementation is designed around the required query pattern and can be extended with limit/cursor pagination if the requirement changes.
+
+#### 7. Authentication
+
+The assessment requires authorization but does not specify an authentication mechanism.
+
+I added a minimal JWT login endpoint solely to make the protected endpoint independently testable.
+
+I did not implement registration, password reset, refresh tokens, social login, or other unrelated authentication features.
+
+#### 8. Order fields
+
+Only fields relevant to the assignment are exposed:
+
+```text
+id
+userId
+status
+totalAmount
+createdAt
+```
+
+Sensitive user information such as password hashes is never returned.
+
+---
+
+## 2. What AI did you use, and where did you override it?
+
+AI tools were used during development for:
+
+- discussing the project structure
+- reviewing implementation approaches
+- generating initial boilerplate
+- suggesting test cases
+- explaining testing concepts
+- identifying mistakes in test mock paths
+- reviewing scalability considerations
+- helping draft documentation
+
+I reviewed and tested the generated code rather than treating AI output as authoritative.
+
+One concrete example where I changed the approach was testing.
+
+The initial implementation contained separate service and repository unit tests in addition to HTTP integration tests. The service tests had incorrect mock paths and were failing.
+
+After reviewing the coverage, I chose not to add unnecessary abstraction or dependency injection solely to make those unit tests easier to mock. Instead, I kept a focused integration-test suite covering the externally observable behavior required by the assignment.
+
+I also manually tested the API using `curl` and verified the authentication and authorization scenarios independently.
+
+The final implementation therefore reflects both AI assistance and my own review and verification.
+
+---
+
+## 3. What breaks first at 100× data? Be specific. How would you detect it?
+
+At 100× the original referenced dataset, the orders table would contain approximately:
+
+```text
+50,000 × 100 = 5,000,000 orders
+```
+
+The first concern is the number of orders belonging to a **single user**.
+
+The current query is designed around:
+
+```sql
+WHERE user_id = ?
+ORDER BY created_at DESC
+```
+
+with a composite index on:
+
+```text
+(user_id, created_at)
+```
+
+This avoids scanning the entire orders table when retrieving one user's history.
+
+However, if an individual user accumulates a very large number of orders, returning the entire order history in a single HTTP response eventually becomes the bottleneck.
+
+The likely symptoms would be:
+
+- increasing database query time
+- increased response size
+- increased memory usage
+- increased network transfer time
+- higher request latency
+
+### Detection
+
+I would monitor:
+
+- API latency, especially p95/p99
+- PostgreSQL query execution time
+- database CPU and memory usage
+- response payload size
+- slow query logs
+- database connection utilization
+
+I would also inspect the query using PostgreSQL:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT ...
+FROM orders
+WHERE user_id = ?
+ORDER BY created_at DESC;
+```
+
+### Next change
+
+If the order history becomes large enough, I would add pagination.
+
+For example, cursor-based pagination could use:
+
+```text
+created_at + id
+```
+
+as the cursor so that clients retrieve a bounded number of orders per request.
+
+I deliberately did not build pagination because it was not required by the assignment.
+
+---
 
 ## 4. What did you deliberately not build?
 
-| Omission | Reason |
-|----------|--------|
-| **Pagination** | The assignment says "pagination is not required unless the existing assignment requirements justify it." The implementation is designed so pagination can be added later without restructuring. |
-| **Registration endpoint** | Not required. The assignment only needs login to obtain a test token. |
-| **Password reset** | Not required. Would need email infrastructure. |
-| **Refresh tokens** | Not required. A single short-lived token is sufficient for evaluation. |
-| **Redis / caching** | The assignment explicitly says "do not solve the scalability requirement by adding Redis." The query is fast with the composite index at current scale. |
-| **Rate limiting** | Not specified in requirements. Would be added in a production deployment. |
-| **Logging infrastructure** | Console logging is sufficient. Structured logging (e.g., pino) would be added for production. |
-| **Docker** | Not required. The assignment targets a simple `npm run dev` workflow. |
-| **Generic repository/service frameworks** | The assignment says "avoid generic repository frameworks." The small, concrete service layer is sufficient. |
+I intentionally kept the implementation small and focused on the stated requirement.
+
+I did not build:
+
+### Pagination
+
+Not required by the current specification.
+
+The query and API structure leave room to add cursor-based pagination later.
+
+### Redis/cache
+
+The endpoint is a straightforward indexed PostgreSQL query. Adding Redis would introduce another system and cache invalidation concerns without being necessary for the current assignment.
+
+### Microservices
+
+The assignment is small enough that a modular monolith is simpler and easier to reason about.
+
+### Background jobs/queues
+
+There is no asynchronous business process required by this endpoint.
+
+### Search infrastructure
+
+Elasticsearch or another search engine is unnecessary for a simple user/order lookup.
+
+### Full authentication platform
+
+Only the minimal login functionality required to exercise JWT-protected authorization was added.
+
+I did not implement:
+
+- registration
+- refresh tokens
+- password reset
+- email verification
+- social authentication
+- MFA
+
+### Frontend
+
+The assignment asks for a backend API, so no frontend application was created.
+
+### Generic repository or dependency-injection framework
+
+There are only a small number of database operations. A framework or generic abstraction would add complexity without providing meaningful value for this assignment.
+
+---
+
+## Overall Design Rationale
+
+The main goal was to implement the required behavior with the smallest reasonable architecture while still demonstrating:
+
+- clear separation of responsibilities
+- input validation
+- authentication
+- authorization
+- centralized error handling
+- PostgreSQL indexing
+- reproducible database migrations
+- automated API tests
+- scalability awareness
+
+The design can be extended later if the requirements grow, but unnecessary infrastructure was intentionally avoided for this assignment.

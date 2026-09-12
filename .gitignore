@@ -1,7 +1,7 @@
 node_modules/
 dist/
-# .env
-# .env.*
+.env
+.env.*
 !.env.example
 
 coverage/
@@ -14,5 +14,5 @@ coverage/
 
 AGENTS.md
 .freebuff/
-DECISIONS.md
-README.md
+# DECISIONS.md
+# README.md
